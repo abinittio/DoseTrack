@@ -1,80 +1,53 @@
-# DoseTrack
+# DoseTrack — Personal
 
-A pharmacokinetic/pharmacodynamic simulation engine that models drug absorption, distribution, and elimination using numerical ODE methods, then maps plasma concentration to predicted subjective effects via pharmacodynamic models.
+Personal Vyvanse tracking app. Logs doses, models plasma concentration over time, and tracks subjective effects (focus, mood, appetite, crash).
 
-Built for Vyvanse (lisdexamfetamine), a prodrug that requires enzymatic conversion before becoming active — a non-trivial PK problem that most simple calculators get wrong.
+> **Two versions exist:**
+> - **This repo** — personal tool, simple and working. Bateman one-compartment model.
+> - **[DoseTrack Pro](https://github.com/abinittio/DoseTrack-Pro)** *(coming)* — commercial product with full population PK, multi-drug support, clinical analytics, and statistical personalisation.
+
+---
 
 ## What it does
 
-Given a dose, body weight, and timing, DoseTrack solves a system of coupled ODEs to produce a full plasma concentration curve, then translates that into predicted effect intensity and therapeutic zone classification.
+- Log doses with date, time, and food context
+- Predicts plasma concentration curve using a one-compartment oral absorption model (Bateman function)
+- Tracks tolerance: acute (within-day) and chronic (7-day rolling)
+- Subjective check-ins (focus, mood, appetite, crash) overlaid on the PK curve
+- History calendar with per-day dose detail, edit, and delete
+- Sleep debt penalty on predicted central activation
+- Risk flags: late dosing, dose stacking, escalation pattern
+
+## PK model
+
+One-compartment Bateman function per dose, summed for multiple doses:
 
 ```
-Dose → Gut absorption (first-order) → Michaelis-Menten prodrug conversion →
-d-amphetamine disposition → Effect compartment → Sigmoid Emax response
+C(t) = (F · D · mwRatio / Vd) · (ka / (ka − ke)) · (e^(−ke·t) − e^(−ka·t))
 ```
 
-The simulation handles:
-- **Multiple overlapping doses** with independent gut compartments
-- **Food effects** (altered absorption rate, delayed peak, reduced Cmax)
-- **Dose-dependent peak timing** from saturable enzymatic conversion (20mg peaks at ~3.5h, 70mg at ~4.5h)
-- **Adaptive personalisation** from user check-ins via Bayesian-style weight updates with IQR outlier rejection
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| ka (fasting) | 0.85 h⁻¹ | Tmax ≈ 3.8h (FDA label) |
+| ka (fed) | 0.50 h⁻¹ | Tmax ≈ 4.7h (FDA label) |
+| t½ (d-AMP) | 11h | Ermer et al. 2010 |
+| Vd | 3.5 L/kg | Krishnan & Stark 2008 |
+| EC50 | 30 ng/mL | Sigmoid Emax |
 
-## Mathematical models
+Effect (0–100%) is mapped via sigmoid Emax with tolerance-adjusted EC50. Tolerance shifts EC50 upward up to 60% based on acute and chronic exposure.
 
-| Model | Application |
-|-------|------------|
-| **RK4 integrator** | 1-minute timestep ODE solver for the PK state vector |
-| **Michaelis-Menten kinetics** | Saturable LDX → d-amphetamine conversion (Vmax = 10 mg/h, Km = 8 mg) |
-| **Sigmoid Emax** | Concentration-effect relationship (EC50 = 30 ng/mL, Hill coefficient = 1.5) |
-| **Hill function** | State probability blending with threshold and saturation (EC50 = 0.4, n = 1.8) |
-| **Tukey fences** | IQR-based outlier detection on prediction errors for robust learning |
-| **Gaussian kernel** | Nicotine effect modelling (sigma = 7 min) |
+## Stack
 
-PK parameters are calibrated against published clinical data (FDA Vyvanse label, Krishnan & Stark 2008, Ermer et al. 2010).
-
-Full mathematical documentation: **[MATHS.md](MATHS.md)** — 317-line walkthrough of every equation in the system.
-
-## Architecture
-
-```
-src/
-  lib/
-    pkpd-engine.ts    # ODE system, RK4 integrator, Sigmoid Emax, simulation loop
-    store.ts          # Zustand state management with localStorage persistence
-    insights.ts       # Pattern detection: peak timing, crash analysis, dose-response
-    types.ts          # Type definitions for the PK/PD domain
-    hooks.ts          # React hooks for real-time effect tracking
-  components/
-    Dashboard.tsx     # Real-time effect gauge and zone display
-    PKCurve.tsx       # 24h plasma/effect concentration chart (Recharts)
-    LogDose.tsx       # Dose entry with food context
-    LogSubjective.tsx # Check-in for adaptive personalisation
-    History.tsx       # Historical logs with mode tracking
-    InsightsView.tsx  # Pattern analysis and trend detection
-    Onboarding.tsx    # Weight/drug configuration
-    EffectGauge.tsx   # Visual effect intensity indicator
-```
-
-## Tech stack
-
-| Layer | Technology |
-|-------|-----------|
-| Framework | Next.js 16, React 19 |
-| Language | TypeScript (strict mode) |
-| Simulation | Custom RK4 ODE solver |
-| Charts | Recharts |
-| State | Zustand with persistence |
-| Styling | Tailwind CSS 4 |
+Next.js 16 · React 19 · TypeScript · Zustand · Recharts · Tailwind CSS 4
 
 ## Running locally
 
 ```bash
 npm install
 npm run dev
+# → http://localhost:3000
 ```
-
-Open http://localhost:3000.
 
 ## Disclaimer
 
-DoseTrack is not medical advice. Predictions are estimates based on published pharmacokinetic data and user self-reports. Always consult a healthcare professional.
+Not medical advice. Predictions are estimates based on published pharmacokinetic parameters. Consult a healthcare professional.
