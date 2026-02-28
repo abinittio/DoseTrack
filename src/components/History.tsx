@@ -5,6 +5,7 @@
 
 import { useState, useMemo } from 'react';
 import { useStore } from '@/lib/store';
+import { DoseEntry } from '@/lib/types';
 import { useDayScores, useCurveForDay, useDosesForDate, useSubjectiveForDate } from '@/lib/hooks';
 import { DayScore, ZONE_COLORS } from '@/lib/types';
 import {
@@ -191,6 +192,102 @@ function CalendarHeatmap({
 
 // ---- Day Detail ----
 
+function DoseRow({ dose }: { dose: DoseEntry }) {
+  const removeDose = useStore((s) => s.removeDose);
+  const editDose = useStore((s) => s.editDose);
+  const [editing, setEditing] = useState(false);
+  const time = new Date(dose.takenAt);
+  const [editDoseMg, setEditDoseMg] = useState(dose.doseMg);
+  const [editTime, setEditTime] = useState(
+    `${String(time.getHours()).padStart(2, '0')}:${String(time.getMinutes()).padStart(2, '0')}`
+  );
+  const [editDate, setEditDate] = useState(dose.takenAt.slice(0, 10));
+
+  const handleSave = () => {
+    const [h, m] = editTime.split(':').map(Number);
+    const [y, mo, d] = editDate.split('-').map(Number);
+    const newDate = new Date(y, mo - 1, d, h, m, 0, 0);
+    editDose(dose.id, { doseMg: editDoseMg, takenAt: newDate });
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <div className="rounded-xl p-3 mb-1" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border-light)' }}>
+        <div className="flex gap-2 mb-2">
+          <select
+            value={editDoseMg}
+            onChange={(e) => setEditDoseMg(Number(e.target.value))}
+            className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium"
+            style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-light)', color: 'var(--text-primary)' }}
+          >
+            {[10, 20, 30, 40, 50, 60, 70].map((d) => (
+              <option key={d} value={d}>{d}mg</option>
+            ))}
+          </select>
+          <input
+            type="date"
+            value={editDate}
+            onChange={(e) => setEditDate(e.target.value)}
+            className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium"
+            style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-light)', color: 'var(--text-primary)' }}
+          />
+          <input
+            type="time"
+            value={editTime}
+            onChange={(e) => setEditTime(e.target.value)}
+            className="flex-1 px-2 py-1.5 rounded-lg text-xs font-medium"
+            style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border-light)', color: 'var(--text-primary)' }}
+          />
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={handleSave}
+            className="flex-1 py-1.5 rounded-lg text-xs font-semibold text-white"
+            style={{ background: 'var(--accent-primary)' }}
+          >
+            Save
+          </button>
+          <button
+            onClick={() => setEditing(false)}
+            className="flex-1 py-1.5 rounded-lg text-xs font-semibold"
+            style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)', border: '1px solid var(--border-light)' }}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 text-xs py-1" style={{ color: 'var(--text-primary)' }}>
+      <span>&#x1F48A;</span>
+      <span className="font-semibold">{dose.doseMg}mg</span>
+      <span style={{ color: 'var(--text-tertiary)' }}>
+        {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        {dose.withFood ? ' (with food)' : ''}
+      </span>
+      <div className="flex gap-1 ml-auto">
+        <button
+          onClick={() => setEditing(true)}
+          className="px-2 py-0.5 rounded text-[10px] font-medium"
+          style={{ color: 'var(--accent-primary)', background: 'rgba(99,102,241,0.08)' }}
+        >
+          Edit
+        </button>
+        <button
+          onClick={() => removeDose(dose.id)}
+          className="px-2 py-0.5 rounded text-[10px] font-medium"
+          style={{ color: '#EF4444', background: 'rgba(239,68,68,0.08)' }}
+        >
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function DayDetail({ date, score }: { date: string; score?: DayScore }) {
   const dateObj = useMemo(() => new Date(date + 'T12:00:00'), [date]);
   const curve = useCurveForDay(dateObj);
@@ -283,20 +380,10 @@ function DayDetail({ date, score }: { date: string; score?: DayScore }) {
           <p className="text-xs font-semibold mb-1.5" style={{ color: 'var(--text-secondary)' }}>
             Doses ({doses.length})
           </p>
-          <div className="space-y-1">
-            {doses.map((dose) => {
-              const time = new Date(dose.takenAt);
-              return (
-                <div key={dose.id} className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-primary)' }}>
-                  <span>&#x1F48A;</span>
-                  <span className="font-semibold">{dose.doseMg}mg</span>
-                  <span style={{ color: 'var(--text-tertiary)' }}>
-                    {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    {dose.withFood ? ' (with food)' : ''}
-                  </span>
-                </div>
-              );
-            })}
+          <div>
+            {doses.map((dose) => (
+              <DoseRow key={dose.id} dose={dose} />
+            ))}
           </div>
         </div>
       )}
