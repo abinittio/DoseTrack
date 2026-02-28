@@ -29,59 +29,70 @@ export default function PKCurve() {
   const todaySubjective = useTodaySubjective();
   const status = useCurrentEffect();
 
-  const nowHour = useMemo(() => {
-    const n = new Date();
-    return n.getHours() + n.getMinutes() / 60;
-  }, []);
+  // Use hours-from-now as x-axis to avoid midnight wrapping
+  const nowMs = useMemo(() => Date.now(), []);
 
-  // Main chart data
+  // Main chart data — x = hoursFromNow (continuous, no wrapping)
   const chartData = useMemo(() => {
-    return curve.map((p) => {
-      const d = new Date(p.timestamp);
-      const h = d.getHours() + d.getMinutes() / 60;
-      return {
-        time: h,
-        effect: Math.round(p.effectPct * 10) / 10,
-        plasma: Math.round(p.plasmaConc * 10) / 10,
-        crashRate: p.crashRate,
-      };
-    });
-  }, [curve]);
+    return curve.map((p) => ({
+      time: Math.round(((p.timestamp - nowMs) / 3600_000) * 100) / 100,
+      effect: Math.round(p.centralActivation * 10) / 10,
+      pa: Math.round(p.peripheralActivation * 10) / 10,
+      plasma: Math.round(p.plasmaConc * 10) / 10,
+      crashRate: p.crashRate,
+      crashRiskLevel: p.crashRisk?.level ?? 'low',
+    }));
+  }, [curve, nowMs]);
 
   // Subjective overlay data (scatter points)
   const subjectivePoints = useMemo(() => {
     return todaySubjective.map((s) => {
-      const t = new Date(s.timestamp);
-      const h = t.getHours() + t.getMinutes() / 60;
-      // Map focus (1-10) to 0-100 scale for overlay
+      const tMs = new Date(s.timestamp).getTime();
       const focusPct = (s.focus / 10) * 100;
       return {
-        time: h,
+        time: Math.round(((tMs - nowMs) / 3600_000) * 100) / 100,
         focus: Math.round(focusPct),
         mood: s.mood,
         crash: s.crash,
       };
     });
-  }, [todaySubjective]);
+  }, [todaySubjective, nowMs]);
 
   // Dose marker times
   const doseMarkers = useMemo(() => {
     return todayDoses.map((d) => {
-      const t = new Date(d.takenAt);
+      const tMs = new Date(d.takenAt).getTime();
       return {
-        time: t.getHours() + t.getMinutes() / 60,
+        time: Math.round(((tMs - nowMs) / 3600_000) * 100) / 100,
         label: `${d.doseMg}mg`,
         withFood: d.withFood,
       };
     });
-  }, [todayDoses]);
+  }, [todayDoses, nowMs]);
 
-  const formatHour = (h: number) => {
-    const norm = ((Math.round(h) % 24) + 24) % 24;
-    const ampm = norm >= 12 ? 'PM' : 'AM';
-    const display = norm > 12 ? norm - 12 : norm === 0 ? 12 : norm;
+  // Format hours-from-now to clock time
+  const formatHour = (hFromNow: number) => {
+    const d = new Date(nowMs + hFromNow * 3600_000);
+    const h = d.getHours();
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const display = h > 12 ? h - 12 : h === 0 ? 12 : h;
     return `${display} ${ampm}`;
   };
+
+  // DEBUG: find max values in curve data
+  const debugInfo = useMemo(() => {
+    if (curve.length === 0) return null;
+    const maxCA = Math.max(...curve.map(p => p.centralActivation));
+    const maxPA = Math.max(...curve.map(p => p.peripheralActivation));
+    const maxPlasma = Math.max(...curve.map(p => p.plasmaConc));
+    const maxEffectConc = Math.max(...curve.map(p => p.effectConc));
+    return { maxCA, maxPA, maxPlasma, maxEffectConc, points: curve.length };
+  }, [curve]);
+
+  // Log debug info
+  if (debugInfo) {
+    console.log('[PKCurve DEBUG]', debugInfo, 'profile:', { weightKg: profile?.weightKg, ke0: profile?.ke0Personal });
+  }
 
   if (chartData.length === 0) {
     return (
@@ -99,6 +110,14 @@ export default function PKCurve() {
 
   return (
     <div className="px-4 pt-4 pb-4 space-y-4">
+      {/* DEBUG — remove after fixing */}
+      {debugInfo && (
+        <div className="card text-xs font-mono" style={{ padding: '8px 12px', background: '#FFFBEB', border: '1px solid #F59E0B' }}>
+          <p>DEBUG: pts={debugInfo.points} maxCA={debugInfo.maxCA} maxPA={debugInfo.maxPA}</p>
+          <p>maxPlasma={debugInfo.maxPlasma} maxEffConc={debugInfo.maxEffectConc}</p>
+          <p>weight={profile?.weightKg}kg ke0={profile?.ke0Personal}</p>
+        </div>
+      )}
       {/* Header with current stats */}
       <div className="flex items-center justify-between">
         <div>
@@ -115,11 +134,16 @@ export default function PKCurve() {
               className="text-2xl font-bold tabular-nums"
               style={{ color: ZONE_COLORS[status.zone] }}
             >
-              {Math.round(status.currentLevel)}%
+              {Math.round(status.centralActivation)}%
             </p>
             <p className="text-[10px] font-medium" style={{ color: 'var(--text-tertiary)' }}>
-              current effect
+              cognitive
             </p>
+            {status.peripheralActivation > 0 && (
+              <p className="text-xs font-bold tabular-nums" style={{ color: '#F97316' }}>
+                {Math.round(status.peripheralActivation)}% physical
+              </p>
+            )}
           </div>
         )}
       </div>
@@ -159,7 +183,7 @@ export default function PKCurve() {
       {/* Main Chart */}
       <div className="card" style={{ padding: '12px 4px 4px' }}>
         <p className="text-xs font-semibold px-3 mb-2" style={{ color: 'var(--text-secondary)' }}>
-          Effect Level (%) &amp; Plasma Concentration
+          Cognitive &amp; Physical Activation (%)
         </p>
         <ResponsiveContainer width="100%" height={260}>
           <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
@@ -173,10 +197,13 @@ export default function PKCurve() {
 
             <XAxis
               dataKey="time"
+              type="number"
+              domain={[-18, 6]}
               tickFormatter={formatHour}
               tick={{ fontSize: 10, fill: '#94A3B8', fontWeight: 500 }}
               axisLine={false}
               tickLine={false}
+              ticks={[-18, -15, -12, -9, -6, -3, 0, 3, 6]}
             />
             <YAxis
               domain={[0, 100]}
@@ -191,7 +218,8 @@ export default function PKCurve() {
               formatter={((value: any, name: any) => {
                 const v = Number(value ?? 0);
                 const n = String(name ?? '');
-                if (n === 'effect') return [`${Math.round(v)}%`, 'Effect Level'];
+                if (n === 'effect') return [`${Math.round(v)}%`, 'Cognitive (CA)'];
+                if (n === 'pa') return [`${Math.round(v)}%`, 'Physical (PA)'];
                 if (n === 'plasma') return [`${v.toFixed(1)} ng/mL`, 'Plasma dAMP'];
                 if (n === 'focus') return [`${Math.round(v)}%`, 'Your Focus'];
                 return [v, n];
@@ -213,13 +241,24 @@ export default function PKCurve() {
               </linearGradient>
             </defs>
 
-            {/* Effect area */}
+            {/* CA area (cognitive) — solid */}
             <Area
               type="monotone"
               dataKey="effect"
               stroke="#6366F1"
               strokeWidth={2.5}
               fill="url(#effectFill)"
+              dot={false}
+              isAnimationActive={false}
+            />
+
+            {/* PA line (physical) — dashed orange */}
+            <Line
+              type="monotone"
+              dataKey="pa"
+              stroke="#F97316"
+              strokeWidth={2}
+              strokeDasharray="6 3"
               dot={false}
               isAnimationActive={false}
             />
@@ -269,7 +308,7 @@ export default function PKCurve() {
 
             {/* Now line */}
             <ReferenceLine
-              x={nowHour}
+              x={0}
               stroke="#1E293B"
               strokeWidth={1.5}
               strokeDasharray="5 2"
@@ -289,7 +328,13 @@ export default function PKCurve() {
           <div className="flex items-center gap-1.5">
             <div className="w-3 h-0.5 rounded" style={{ background: '#6366F1' }} />
             <span className="text-[10px] font-medium" style={{ color: 'var(--text-tertiary)' }}>
-              Effect
+              Cognitive
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="w-3 h-0.5 rounded" style={{ background: '#F97316' }} />
+            <span className="text-[10px] font-medium" style={{ color: 'var(--text-tertiary)' }}>
+              Physical
             </span>
           </div>
           <div className="flex items-center gap-1.5">

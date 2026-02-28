@@ -2,17 +2,19 @@
 // VyTrack — Insight Generation Engine
 // ============================================
 
-import { DoseEntry, SubjectiveEntry, Insight, DayScore } from './types';
+import { DoseEntry, SubjectiveEntry, SleepEntry, Insight, DayScore, ToleranceState } from './types';
 import { v4 as uuidv4 } from 'uuid';
+import { computeToleranceState, computeSleepDebtIndex, PK } from './pkpd-engine';
 
 /**
  * Generate personalised insights from cumulative dose + subjective history.
- * Called from the Insights tab. Returns up to 8 most relevant insights.
+ * Called from the Insights tab. Returns up to 10 most relevant insights.
  */
 export function generateInsights(
   doses: DoseEntry[],
   subjectiveLogs: SubjectiveEntry[],
   dayScores: DayScore[],
+  sleepLogs: SleepEntry[] = [],
 ): Insight[] {
   const insights: Insight[] = [];
   const now = new Date().toISOString();
@@ -105,7 +107,82 @@ export function generateInsights(
     }
   }
 
-  // ---- 7. Consistency insight ----
+  // ---- 7. Tolerance insights ----
+  if (doses.length >= 5) {
+    const now = Date.now();
+    const tolerance = computeToleranceState(doses, now);
+
+    if (tolerance.chronicTolerance > 0.15) {
+      insights.push({
+        id: uuidv4(),
+        type: 'chronic_tolerance',
+        title: 'Chronic tolerance building',
+        body: `Your 7-day dosing pattern suggests tolerance is developing (sensitivity at ${tolerance.sensitivityPct}%). The model shifts your EC50 up by ${Math.round((tolerance.combinedModifier - 1) * 100)}%, meaning you need higher concentrations for the same effect. A drug holiday or dose review with your prescriber could help.`,
+        severity: 'caution',
+        generatedAt: now.toString(),
+      });
+    } else if (tolerance.acuteTolerance > 0.1) {
+      insights.push({
+        id: uuidv4(),
+        type: 'acute_tolerance',
+        title: 'Within-day tolerance',
+        body: `Multiple recent doses are causing acute tachyphylaxis. Your second dose today will be less effective than the first — the model accounts for this with a ${Math.round(tolerance.acuteTolerance * 100)}% EC50 shift.`,
+        severity: 'info',
+        generatedAt: now.toString(),
+      });
+    }
+  }
+
+  // ---- 8. Sleep debt insight ----
+  if (sleepLogs.length >= 3) {
+    const sdi = computeSleepDebtIndex(sleepLogs);
+    if (sdi > 8) {
+      insights.push({
+        id: uuidv4(),
+        type: 'sleep_debt',
+        title: 'Sleep debt is high',
+        body: `You have ${sdi.toFixed(1)}h of sleep debt over the last 7 days. This reduces your cognitive activation by up to ${Math.round(Math.min(30, (sdi - 6) / 22 * 30))}% — Vyvanse can't fully compensate for lost sleep. Prioritise rest to get the most from your medication.`,
+        severity: 'caution',
+        generatedAt: new Date().toISOString(),
+      });
+    } else if (sdi <= 4 && sleepLogs.length >= 5) {
+      insights.push({
+        id: uuidv4(),
+        type: 'sleep_debt',
+        title: 'Sleep is on point',
+        body: `Only ${sdi.toFixed(1)}h of sleep debt this week. Well-rested brains respond better to stimulants — your CA is running at full capacity.`,
+        severity: 'positive',
+        generatedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  // ---- 9. Escalation pattern ----
+  if (doses.length >= 14) {
+    const now = Date.now();
+    const dayMs = 24 * 3600_000;
+    let thisWeekMg = 0;
+    let lastWeekMg = 0;
+    for (const d of doses) {
+      const dt = new Date(d.takenAt).getTime();
+      const daysAgo = (now - dt) / dayMs;
+      if (daysAgo >= 0 && daysAgo < 7) thisWeekMg += d.doseMg;
+      else if (daysAgo >= 7 && daysAgo < 14) lastWeekMg += d.doseMg;
+    }
+    if (lastWeekMg > 0 && thisWeekMg > lastWeekMg * 1.2) {
+      const pctIncrease = Math.round(((thisWeekMg - lastWeekMg) / lastWeekMg) * 100);
+      insights.push({
+        id: uuidv4(),
+        type: 'escalation',
+        title: 'Dose escalation detected',
+        body: `This week's total (${thisWeekMg}mg) is ${pctIncrease}% higher than last week (${lastWeekMg}mg). Escalation can indicate developing tolerance. Discuss with your prescriber if this trend continues.`,
+        severity: 'caution',
+        generatedAt: new Date().toISOString(),
+      });
+    }
+  }
+
+  // ---- 10. Consistency insight ----
   if (doses.length >= 7) {
     const doseTimes = doses.map((d) => {
       const t = new Date(d.takenAt);
@@ -136,7 +213,7 @@ export function generateInsights(
     }
   }
 
-  return insights.slice(0, 8);
+  return insights.slice(0, 10);
 }
 
 // ---- Helper: Peak timing analysis ----

@@ -5,7 +5,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { v4 as uuidv4 } from 'uuid';
-import { DoseEntry, SubjectiveEntry, UserProfile } from './types';
+import { DoseEntry, SubjectiveEntry, SleepEntry, UserProfile } from './types';
 
 interface VyTrackState {
   // User profile
@@ -23,6 +23,12 @@ interface VyTrackState {
   subjectiveLogs: SubjectiveEntry[];
   addSubjectiveLog: (focus: number, mood: number, appetite: number, crash: number, predictedEffectPct: number, notes?: string) => void;
   removeSubjectiveLog: (id: string) => void;
+
+  // Sleep logs
+  sleepLogs: SleepEntry[];
+  addSleepLog: (date: string, hoursSlept: number, quality?: number) => void;
+  removeSleepLog: (id: string) => void;
+  editSleepLog: (id: string, updates: Partial<Pick<SleepEntry, 'date' | 'hoursSlept' | 'quality'>>) => void;
 
   // Calibration
   updateKe0: (newKe0: number) => void;
@@ -116,6 +122,31 @@ export const useStore = create<VyTrackState>()(
           subjectiveLogs: state.subjectiveLogs.filter((s) => s.id !== id),
         })),
 
+      // Sleep logs
+      sleepLogs: [],
+      addSleepLog: (date, hoursSlept, quality) =>
+        set((state) => ({
+          sleepLogs: [
+            ...state.sleepLogs,
+            {
+              id: uuidv4(),
+              date,
+              hoursSlept,
+              quality,
+            },
+          ],
+        })),
+      removeSleepLog: (id) =>
+        set((state) => ({
+          sleepLogs: state.sleepLogs.filter((s) => s.id !== id),
+        })),
+      editSleepLog: (id, updates) =>
+        set((state) => ({
+          sleepLogs: state.sleepLogs.map((s) =>
+            s.id === id ? { ...s, ...updates } : s
+          ),
+        })),
+
       // Calibration
       updateKe0: (newKe0) =>
         set((state) => ({
@@ -129,11 +160,12 @@ export const useStore = create<VyTrackState>()(
         const state = get();
         return JSON.stringify(
           {
-            version: 1,
+            version: 2,
             exportDate: new Date().toISOString(),
             profile: state.profile,
             doses: state.doses,
             subjectiveLogs: state.subjectiveLogs,
+            sleepLogs: state.sleepLogs,
           },
           null,
           2
@@ -142,10 +174,11 @@ export const useStore = create<VyTrackState>()(
       importData: (json: string) => {
         const data = JSON.parse(json) as Record<string, unknown>;
         if (!data || typeof data !== 'object') throw new Error('Invalid data');
-        const patch: Partial<Pick<VyTrackState, 'profile' | 'doses' | 'subjectiveLogs'>> = {};
+        const patch: Partial<Pick<VyTrackState, 'profile' | 'doses' | 'subjectiveLogs' | 'sleepLogs'>> = {};
         if (data.profile) patch.profile = data.profile as UserProfile;
         if (Array.isArray(data.doses)) patch.doses = data.doses as DoseEntry[];
         if (Array.isArray(data.subjectiveLogs)) patch.subjectiveLogs = data.subjectiveLogs as SubjectiveEntry[];
+        if (Array.isArray(data.sleepLogs)) patch.sleepLogs = data.sleepLogs as SleepEntry[];
         set(patch);
       },
       resetAllData: () => {
@@ -153,12 +186,60 @@ export const useStore = create<VyTrackState>()(
           profile: null,
           doses: [],
           subjectiveLogs: [],
+          sleepLogs: [],
         });
       },
     }),
     {
       name: 'vytrack-storage',
-      version: 1,
+      version: 2,
+      migrate: (persisted: unknown, version: number) => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const state = persisted as any;
+        if (version < 2) {
+          // v1 → v2: add sleepLogs array
+          return { ...state, sleepLogs: [] };
+        }
+        return state;
+      },
+      onRehydrateStorage: () => {
+        return (state) => {
+          // After rehydration, create a backup of current data
+          if (state && (state.doses.length > 0 || state.subjectiveLogs.length > 0)) {
+            try {
+              const backup = JSON.stringify({
+                profile: state.profile,
+                doses: state.doses,
+                subjectiveLogs: state.subjectiveLogs,
+                sleepLogs: state.sleepLogs,
+                backedUpAt: new Date().toISOString(),
+              });
+              localStorage.setItem('vytrack-storage-backup', backup);
+            } catch {
+              // localStorage might be full, ignore
+            }
+          } else if (state && state.doses.length === 0 && state.subjectiveLogs.length === 0) {
+            // Primary store is empty — try restoring from backup
+            try {
+              const backupStr = localStorage.getItem('vytrack-storage-backup');
+              if (backupStr) {
+                const backup = JSON.parse(backupStr);
+                if (backup.doses?.length > 0 || backup.subjectiveLogs?.length > 0) {
+                  console.log('[VyTrack] Restoring from backup — primary store was empty');
+                  useStore.setState({
+                    profile: backup.profile || state.profile,
+                    doses: backup.doses || [],
+                    subjectiveLogs: backup.subjectiveLogs || [],
+                    sleepLogs: backup.sleepLogs || [],
+                  });
+                }
+              }
+            } catch {
+              // Backup corrupted or not available
+            }
+          }
+        };
+      },
     }
   )
 );

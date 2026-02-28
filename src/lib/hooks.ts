@@ -4,14 +4,15 @@
 
 import { useMemo, useState, useEffect } from 'react';
 import { useStore } from './store';
-import { simulatePKPD, getCurrentEffectStatus, getCurveForDay, PK } from './pkpd-engine';
-import { DoseEntry, SubjectiveEntry, DayScore, CurvePoint, EffectStatus } from './types';
+import { simulatePKPD, getCurrentEffectStatus, getCurveForDay, PK, computeToleranceState, computeSleepDebtIndex, computeRiskFlags } from './pkpd-engine';
+import { DoseEntry, SubjectiveEntry, SleepEntry, DayScore, CurvePoint, EffectStatus, ToleranceState, RiskFlags } from './types';
 
 // ---- Current Effect (updates every 60s) ----
 
 export function useCurrentEffect(): EffectStatus | null {
   const doses = useStore((s) => s.doses);
   const profile = useStore((s) => s.profile);
+  const sleepLogs = useStore((s) => s.sleepLogs);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -21,9 +22,9 @@ export function useCurrentEffect(): EffectStatus | null {
 
   return useMemo(() => {
     if (!profile) return null;
-    return getCurrentEffectStatus(doses, profile.weightKg, profile.ke0Personal);
+    return getCurrentEffectStatus(doses, profile.weightKg, profile.ke0Personal, sleepLogs);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doses, profile, tick]);
+  }, [doses, profile, sleepLogs, tick]);
 }
 
 // ---- 24h Curve (last 18h + next 6h) ----
@@ -31,6 +32,7 @@ export function useCurrentEffect(): EffectStatus | null {
 export function useCurve24h(): CurvePoint[] {
   const doses = useStore((s) => s.doses);
   const profile = useStore((s) => s.profile);
+  const sleepLogs = useStore((s) => s.sleepLogs);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -47,10 +49,11 @@ export function useCurve24h(): CurvePoint[] {
       profile.ke0Personal,
       now - 18 * 3600_000,
       now + 6 * 3600_000,
-      3
+      3,
+      sleepLogs
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doses, profile, tick]);
+  }, [doses, profile, sleepLogs, tick]);
 }
 
 // ---- Curve for a specific day ----
@@ -58,12 +61,55 @@ export function useCurve24h(): CurvePoint[] {
 export function useCurveForDay(date: Date): CurvePoint[] {
   const doses = useStore((s) => s.doses);
   const profile = useStore((s) => s.profile);
+  const sleepLogs = useStore((s) => s.sleepLogs);
   const dateStr = date.toDateString();
 
   return useMemo(() => {
     if (!profile) return [];
-    return getCurveForDay(doses, profile.weightKg, profile.ke0Personal, new Date(dateStr));
-  }, [doses, profile, dateStr]);
+    return getCurveForDay(doses, profile.weightKg, profile.ke0Personal, new Date(dateStr), sleepLogs);
+  }, [doses, profile, sleepLogs, dateStr]);
+}
+
+// ---- Tolerance State ----
+
+export function useToleranceState(): ToleranceState {
+  const doses = useStore((s) => s.doses);
+  return useMemo(() => computeToleranceState(doses, Date.now()), [doses]);
+}
+
+// ---- Sleep Debt Index ----
+
+export function useSleepDebtIndex(): number {
+  const sleepLogs = useStore((s) => s.sleepLogs);
+  return useMemo(() => computeSleepDebtIndex(sleepLogs), [sleepLogs]);
+}
+
+// ---- Risk Flags ----
+
+export function useRiskFlags(): RiskFlags {
+  const doses = useStore((s) => s.doses);
+  const sleepLogs = useStore((s) => s.sleepLogs);
+  const status = useCurrentEffect();
+  return useMemo(() => {
+    const tolerance = computeToleranceState(doses, Date.now());
+    const sdi = computeSleepDebtIndex(sleepLogs);
+    return computeRiskFlags(doses, Date.now(), sdi, tolerance, status?.currentLevel ?? 0);
+  }, [doses, sleepLogs, status]);
+}
+
+// ---- Recent Sleep Logs (last 7 days) ----
+
+export function useRecentSleepLogs(): SleepEntry[] {
+  const sleepLogs = useStore((s) => s.sleepLogs);
+  return useMemo(() => {
+    const now = new Date();
+    const weekAgo = new Date(now);
+    weekAgo.setDate(now.getDate() - 7);
+    const weekAgoStr = weekAgo.toISOString().split('T')[0];
+    return sleepLogs
+      .filter((s) => s.date >= weekAgoStr)
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [sleepLogs]);
 }
 
 // ---- Today's doses ----
@@ -200,6 +246,95 @@ export function useActiveDates(): Set<string> {
     for (const l of logs) dates.add(new Date(l.timestamp).toISOString().split('T')[0]);
     return dates;
   }, [doses, logs]);
+}
+
+// ---- Yesterday's doses ----
+
+export function useYesterdayDoses(): DoseEntry[] {
+  const doses = useStore((s) => s.doses);
+  const yesterday = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d.toDateString();
+  }, []);
+  return useMemo(
+    () =>
+      doses
+        .filter((d) => new Date(d.takenAt).toDateString() === yesterday)
+        .sort((a, b) => new Date(a.takenAt).getTime() - new Date(b.takenAt).getTime()),
+    [doses, yesterday]
+  );
+}
+
+// ---- Yesterday's subjective logs ----
+
+export function useYesterdaySubjective(): SubjectiveEntry[] {
+  const logs = useStore((s) => s.subjectiveLogs);
+  const yesterday = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d.toDateString();
+  }, []);
+  return useMemo(
+    () =>
+      logs
+        .filter((s) => new Date(s.timestamp).toDateString() === yesterday)
+        .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()),
+    [logs, yesterday]
+  );
+}
+
+// ---- Recent stats (all-time + week) ----
+
+export function useRecentStats() {
+  const doses = useStore((s) => s.doses);
+  const subjectiveLogs = useStore((s) => s.subjectiveLogs);
+
+  return useMemo(() => {
+    const now = Date.now();
+    const weekAgo = now - 7 * 24 * 3600_000;
+
+    const weekDoses = doses.filter((d) => new Date(d.takenAt).getTime() >= weekAgo);
+    const weekLogs = subjectiveLogs.filter((s) => new Date(s.timestamp).getTime() >= weekAgo);
+
+    // Days tracked (unique dates with any data)
+    const allDates = new Set<string>();
+    for (const d of doses) allDates.add(new Date(d.takenAt).toDateString());
+    for (const s of subjectiveLogs) allDates.add(new Date(s.timestamp).toDateString());
+
+    // Current streak (consecutive days from today going back)
+    let streak = 0;
+    const today = new Date();
+    for (let i = 0; i < 365; i++) {
+      const checkDate = new Date(today);
+      checkDate.setDate(today.getDate() - i);
+      if (allDates.has(checkDate.toDateString())) {
+        streak++;
+      } else {
+        break;
+      }
+    }
+
+    // First data date
+    let firstDate: string | null = null;
+    if (doses.length > 0 || subjectiveLogs.length > 0) {
+      const allTimestamps = [
+        ...doses.map((d) => new Date(d.takenAt).getTime()),
+        ...subjectiveLogs.map((s) => new Date(s.timestamp).getTime()),
+      ];
+      firstDate = new Date(Math.min(...allTimestamps)).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    }
+
+    return {
+      totalDoses: doses.length,
+      totalCheckIns: subjectiveLogs.length,
+      daysTracked: allDates.size,
+      weekDoses: weekDoses.length,
+      weekCheckIns: weekLogs.length,
+      streak,
+      firstDate,
+    };
+  }, [doses, subjectiveLogs]);
 }
 
 // ---- Ke0 calibration from subjective history ----

@@ -13,6 +13,7 @@ import History from '@/components/History';
 import InsightsView from '@/components/InsightsView';
 import LogDose from '@/components/LogDose';
 import LogSubjective from '@/components/LogSubjective';
+import LogSleep from '@/components/LogSleep';
 import BottomNav from '@/components/BottomNav';
 
 export default function App() {
@@ -20,6 +21,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<TabId>('home');
   const [showDoseSheet, setShowDoseSheet] = useState(false);
   const [showSubjectiveSheet, setShowSubjectiveSheet] = useState(false);
+  const [showSleepSheet, setShowSleepSheet] = useState(false);
   const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => setHydrated(true), []);
@@ -57,6 +59,7 @@ export default function App() {
 
   const closeDoseSheet = () => setShowDoseSheet(false);
   const closeSubjectiveSheet = () => setShowSubjectiveSheet(false);
+  const closeSleepSheet = () => setShowSleepSheet(false);
 
   return (
     <div className="min-h-screen" style={{ paddingBottom: 'var(--nav-height)', background: 'var(--bg-primary)' }}>
@@ -66,6 +69,7 @@ export default function App() {
           <Dashboard
             onNavigate={setActiveTab}
             onLogSubjective={() => setShowSubjectiveSheet(true)}
+            onLogSleep={() => setShowSleepSheet(true)}
           />
         )}
         {activeTab === 'curve' && <PKCurve />}
@@ -92,12 +96,13 @@ export default function App() {
           }}
         />
       )}
+      {showSleepSheet && <LogSleep onClose={closeSleepSheet} />}
 
       {/* Navigation */}
       <BottomNav activeTab={activeTab} onSelect={handleTabSelect} />
 
       {/* Floating "How I Feel" button — visible on Home when no sheet is open */}
-      {activeTab === 'home' && !showDoseSheet && !showSubjectiveSheet && (
+      {activeTab === 'home' && !showDoseSheet && !showSubjectiveSheet && !showSleepSheet && (
         <button
           onClick={() => setShowSubjectiveSheet(true)}
           className="fixed z-20 right-4 flex items-center gap-2 px-4 py-2.5 rounded-full text-white text-sm font-semibold animate-fade-in"

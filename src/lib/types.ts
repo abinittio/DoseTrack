@@ -21,6 +21,15 @@ export interface SubjectiveEntry {
   predictedEffectPct: number; // model prediction at log time
 }
 
+export interface SleepEntry {
+  id: string;
+  date: string;        // YYYY-MM-DD (night of sleep)
+  hoursSlept: number;  // total hours
+  quality?: number;    // 1-5 optional quality rating
+  bedtime?: string;    // ISO string
+  wakeTime?: string;   // ISO string
+}
+
 export interface UserProfile {
   name: string;
   weightKg: number;
@@ -37,18 +46,51 @@ export type TherapeuticZone =
   | 'peak'
   | 'supratherapeutic';
 
+export interface ToleranceState {
+  acuteTolerance: number;    // 0-1, cumulative 24h exposure factor
+  chronicTolerance: number;  // 0-1, 7-day rolling average factor
+  combinedModifier: number;  // final EC50 multiplier (>1 = tolerance, shifts EC50 up)
+  sensitivityPct: number;    // 100 = full sensitivity, 0 = fully tolerant (display value)
+}
+
+export type CrashRiskLevel = 'low' | 'moderate' | 'high';
+
+export interface CrashRisk {
+  level: CrashRiskLevel;
+  score: number;             // 0-1 composite
+  factors: {
+    declineRate: number;     // contribution from rapid effect decline
+    sleepDebt: number;       // contribution from sleep debt
+    tolerance: number;       // contribution from tolerance
+    lateDosing: number;      // contribution from dosing after 2pm
+  };
+}
+
+export interface RiskFlags {
+  overstimulation: boolean;  // daily total > 140mg dAMP-equivalent or effectPct > 95
+  sleepDisruption: boolean;  // dose taken after 2pm with effect extending past 11pm
+  escalationPattern: boolean; // 7-day dose trend rising >20% week-over-week
+  doseStacking: boolean;     // 2+ doses within 3h of each other
+  activeFlags: string[];     // human-readable labels for display
+}
+
 export interface CurvePoint {
-  timestamp: number;     // ms since epoch
-  hoursFromNow: number;  // negative = past, positive = future
-  plasmaConc: number;    // d-amphetamine plasma concentration (ng/mL)
-  effectConc: number;    // effect site concentration (ng/mL)
-  effectPct: number;     // normalized 0-100 effect level
+  timestamp: number;             // ms since epoch
+  hoursFromNow: number;          // negative = past, positive = future
+  plasmaConc: number;            // d-amphetamine plasma concentration (ng/mL)
+  effectConc: number;            // effect site concentration (ng/mL)
+  effectPct: number;             // normalized 0-100 effect level (= CA for backwards compat)
+  centralActivation: number;     // 0-100 cognitive activation (focus, executive function)
+  peripheralActivation: number;  // 0-100 sympathetic activation (heart rate, appetite suppression)
   zone: TherapeuticZone;
-  crashRate: number;     // rate of effect decline (%/h, negative = falling)
+  crashRate: number;             // rate of effect decline (%/h, negative = falling)
+  crashRisk?: CrashRisk;        // multi-factor crash risk at this point
 }
 
 export interface EffectStatus {
-  currentLevel: number;       // 0-100
+  currentLevel: number;       // 0-100 (= CA for backwards compat)
+  centralActivation: number;  // 0-100
+  peripheralActivation: number; // 0-100
   zone: TherapeuticZone;
   zoneColor: string;
   zoneLabel: string;
@@ -57,8 +99,12 @@ export interface EffectStatus {
   timeToSubTherapeuticHours: number;
   isActive: boolean;
   crashScore: number;         // 0-10
+  crashRisk: CrashRisk;
   plasmaConc: number;         // current ng/mL
   effectConc: number;         // current ng/mL
+  toleranceState: ToleranceState;
+  sleepDebtIndex: number;     // hours of deficit from ideal 8h over last 7 days
+  riskFlags: RiskFlags;
 }
 
 export interface DayScore {
@@ -75,7 +121,7 @@ export interface DayScore {
 
 export interface Insight {
   id: string;
-  type: 'peak_timing' | 'crash_pattern' | 'dose_response' | 'tolerance' | 'food_effect' | 'general';
+  type: 'peak_timing' | 'crash_pattern' | 'dose_response' | 'tolerance' | 'food_effect' | 'general' | 'sleep_debt' | 'escalation' | 'acute_tolerance' | 'chronic_tolerance';
   title: string;
   body: string;
   severity: 'info' | 'positive' | 'caution';

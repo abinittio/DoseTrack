@@ -5,11 +5,12 @@
 
 import { useMemo } from 'react';
 import { useStore } from '@/lib/store';
-import { useCurrentEffect, useCurve24h, useTodayDoses, useTodaySubjective } from '@/lib/hooks';
+import { useCurrentEffect, useCurve24h, useTodayDoses, useTodaySubjective, useYesterdayDoses, useYesterdaySubjective, useRecentStats } from '@/lib/hooks';
 import { ZONE_COLORS, ZONE_LABELS, TabId } from '@/lib/types';
 import EffectGauge from './EffectGauge';
 import {
   Area,
+  Line,
   XAxis,
   YAxis,
   ResponsiveContainer,
@@ -21,37 +22,36 @@ import {
 interface DashboardProps {
   onNavigate: (tab: TabId) => void;
   onLogSubjective: () => void;
+  onLogSleep?: () => void;
 }
 
-export default function Dashboard({ onNavigate, onLogSubjective }: DashboardProps) {
+export default function Dashboard({ onNavigate, onLogSubjective, onLogSleep }: DashboardProps) {
   const profile = useStore((s) => s.profile);
   const status = useCurrentEffect();
   const curve = useCurve24h();
   const todayDoses = useTodayDoses();
   const todaySubjective = useTodaySubjective();
+  const yesterdayDoses = useYesterdayDoses();
+  const yesterdaySubjective = useYesterdaySubjective();
+  const stats = useRecentStats();
 
-  const nowHour = useMemo(() => {
-    const n = new Date();
-    return n.getHours() + n.getMinutes() / 60;
-  }, []);
+  const nowMs = useMemo(() => Date.now(), []);
 
-  // Chart data: last 18h + next 6h, keyed by hours-from-midnight
+  // Chart data: hours-from-now (continuous, no midnight wrapping)
   const chartData = useMemo(() => {
-    return curve.map((p) => {
-      const d = new Date(p.timestamp);
-      const h = d.getHours() + d.getMinutes() / 60;
-      return {
-        time: h,
-        effect: Math.round(p.effectPct * 10) / 10,
-        timestamp: p.timestamp,
-      };
-    });
-  }, [curve]);
+    return curve.map((p) => ({
+      time: Math.round(((p.timestamp - nowMs) / 3600_000) * 100) / 100,
+      effect: Math.round(p.centralActivation * 10) / 10,
+      pa: Math.round(p.peripheralActivation * 10) / 10,
+      timestamp: p.timestamp,
+    }));
+  }, [curve, nowMs]);
 
-  const formatHour = (h: number) => {
-    const norm = ((Math.round(h) % 24) + 24) % 24;
-    const ampm = norm >= 12 ? 'p' : 'a';
-    const display = norm > 12 ? norm - 12 : norm === 0 ? 12 : norm;
+  const formatHour = (hFromNow: number) => {
+    const d = new Date(nowMs + hFromNow * 3600_000);
+    const h = d.getHours();
+    const ampm = h >= 12 ? 'p' : 'a';
+    const display = h > 12 ? h - 12 : h === 0 ? 12 : h;
     return `${display}${ampm}`;
   };
 
@@ -94,10 +94,32 @@ export default function Dashboard({ onNavigate, onLogSubjective }: DashboardProp
         )}
       </div>
 
-      {/* Effect Gauge Card */}
+      {/* Risk Flags Banner */}
+      {status?.riskFlags && status.riskFlags.activeFlags.length > 0 && (
+        <div
+          className="rounded-xl px-4 py-3 flex items-start gap-2.5"
+          style={{ background: '#FEF2F2', border: '1px solid #FECACA' }}
+        >
+          <span className="text-base flex-shrink-0">&#x26A0;&#xFE0F;</span>
+          <div>
+            {status.riskFlags.activeFlags.map((flag, i) => (
+              <p key={i} className="text-xs font-semibold" style={{ color: '#DC2626' }}>
+                {flag}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Effect Gauge Card — dual: CA (primary ring) + PA (secondary ring) */}
       <div className="card-elevated" style={{ padding: '24px 16px' }}>
         <div className="flex items-center gap-4">
-          <EffectGauge status={status} size={140} />
+          <EffectGauge
+            status={status}
+            size={140}
+            label="Cognitive"
+            secondaryLevel={status?.peripheralActivation}
+          />
           <div className="flex-1 min-w-0">
             <p className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>
               Current Effect
@@ -106,8 +128,16 @@ export default function Dashboard({ onNavigate, onLogSubjective }: DashboardProp
               className="text-3xl font-bold tabular-nums mt-1"
               style={{ color: status?.isActive ? ZONE_COLORS[status.zone] : 'var(--text-tertiary)' }}
             >
-              {status?.isActive ? `${Math.round(status.currentLevel)}%` : 'Inactive'}
+              {status?.isActive ? `${Math.round(status.centralActivation)}%` : 'Inactive'}
             </p>
+            {status?.isActive && status.peripheralActivation > 0 && (
+              <div className="flex items-center gap-1.5 mt-1">
+                <div className="w-2 h-2 rounded-full" style={{ background: '#F97316' }} />
+                <p className="text-xs font-medium" style={{ color: '#F97316' }}>
+                  Physical: {Math.round(status.peripheralActivation)}%
+                </p>
+              </div>
+            )}
             {statusMessage && (
               <p className="text-sm font-medium mt-2" style={{ color: 'var(--text-secondary)' }}>
                 {statusMessage}
@@ -120,6 +150,51 @@ export default function Dashboard({ onNavigate, onLogSubjective }: DashboardProp
             )}
           </div>
         </div>
+
+        {/* Tolerance + Sleep Debt indicators */}
+        {status?.isActive && (
+          <div className="flex gap-2 mt-3 pt-3" style={{ borderTop: '1px solid var(--border-light)' }}>
+            <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
+              <span className="text-xs">&#x1F9EC;</span>
+              <div>
+                <p className="text-[10px] font-medium" style={{ color: 'var(--text-tertiary)' }}>Sensitivity</p>
+                <p className="text-sm font-bold tabular-nums" style={{
+                  color: status.toleranceState.sensitivityPct > 80 ? '#10B981'
+                    : status.toleranceState.sensitivityPct > 50 ? '#F59E0B' : '#EF4444'
+                }}>
+                  {status.toleranceState.sensitivityPct}%
+                </p>
+              </div>
+            </div>
+            <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg" style={{ background: 'var(--bg-primary)' }}>
+              <span className="text-xs">&#x1F634;</span>
+              <div>
+                <p className="text-[10px] font-medium" style={{ color: 'var(--text-tertiary)' }}>Sleep debt</p>
+                <p className="text-sm font-bold tabular-nums" style={{
+                  color: status.sleepDebtIndex <= 4 ? '#10B981'
+                    : status.sleepDebtIndex <= 8 ? '#F59E0B' : '#EF4444'
+                }}>
+                  {status.sleepDebtIndex.toFixed(1)}h
+                </p>
+              </div>
+            </div>
+            {status.crashRisk.level !== 'low' && (
+              <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg" style={{
+                background: status.crashRisk.level === 'high' ? '#FEF2F2' : '#FFFBEB'
+              }}>
+                <span className="text-xs">&#x1F4C9;</span>
+                <div>
+                  <p className="text-[10px] font-medium" style={{ color: 'var(--text-tertiary)' }}>Crash risk</p>
+                  <p className="text-sm font-bold" style={{
+                    color: status.crashRisk.level === 'high' ? '#EF4444' : '#F59E0B'
+                  }}>
+                    {status.crashRisk.level}
+                  </p>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Mini Curve */}
@@ -146,11 +221,13 @@ export default function Dashboard({ onNavigate, onLogSubjective }: DashboardProp
 
               <XAxis
                 dataKey="time"
+                type="number"
+                domain={[-18, 6]}
                 tickFormatter={formatHour}
                 tick={{ fontSize: 9, fill: '#94A3B8' }}
                 axisLine={false}
                 tickLine={false}
-                interval="preserveStartEnd"
+                ticks={[-18, -12, -6, 0, 6]}
               />
               <YAxis
                 domain={[0, 100]}
@@ -177,9 +254,20 @@ export default function Dashboard({ onNavigate, onLogSubjective }: DashboardProp
                 isAnimationActive={false}
               />
 
+              {/* PA line (dashed, orange) */}
+              <Line
+                type="monotone"
+                dataKey="pa"
+                stroke="#F97316"
+                strokeWidth={1.5}
+                strokeDasharray="4 3"
+                dot={false}
+                isAnimationActive={false}
+              />
+
               {/* Now line */}
               <ReferenceLine
-                x={nowHour}
+                x={0}
                 stroke="var(--text-tertiary)"
                 strokeWidth={1}
                 strokeDasharray="3 3"
@@ -235,6 +323,104 @@ export default function Dashboard({ onNavigate, onLogSubjective }: DashboardProp
         )}
       </div>
 
+      {/* Yesterday's Summary (show when today is empty or always as context) */}
+      {yesterdayDoses.length > 0 && (
+        <div className="card" style={{ opacity: todayDoses.length === 0 ? 1 : 0.8 }}>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>
+              Yesterday
+            </p>
+            <span className="text-xs font-medium tabular-nums" style={{ color: 'var(--text-tertiary)' }}>
+              {yesterdayDoses.length} dose{yesterdayDoses.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+          <div className="space-y-1">
+            {yesterdayDoses.map((dose) => {
+              const time = new Date(dose.takenAt);
+              return (
+                <div
+                  key={dose.id}
+                  className="flex items-center gap-2 px-2 py-1 rounded-lg text-xs"
+                  style={{ background: 'var(--bg-primary)', color: 'var(--text-secondary)' }}
+                >
+                  <span>&#x1F48A;</span>
+                  <span className="font-medium">{dose.doseMg}mg</span>
+                  <span style={{ color: 'var(--text-tertiary)' }}>
+                    {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {dose.withFood ? ' · food' : ''}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+          {yesterdaySubjective.length > 0 && (
+            <div className="flex gap-3 mt-2 pt-2" style={{ borderTop: '1px solid var(--border-light)' }}>
+              {[
+                { label: 'Focus', value: avg(yesterdaySubjective.map((s) => s.focus)), color: 'var(--accent-primary)' },
+                { label: 'Mood', value: avg(yesterdaySubjective.map((s) => s.mood)), color: 'var(--zone-therapeutic)' },
+              ].map((m) => (
+                <div key={m.label} className="text-center flex-1">
+                  <p className="text-sm font-bold tabular-nums" style={{ color: m.color }}>
+                    {m.value.toFixed(1)}
+                  </p>
+                  <p className="text-[9px] font-medium" style={{ color: 'var(--text-tertiary)' }}>
+                    {m.label}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* All-time Data Summary */}
+      {stats.totalDoses > 0 && (
+        <button
+          onClick={() => onNavigate('history')}
+          className="w-full card flex items-center gap-3 text-left"
+          style={{ padding: '12px 16px' }}
+        >
+          <div className="flex-1">
+            <div className="flex items-center gap-3">
+              <div className="text-center">
+                <p className="text-lg font-bold tabular-nums" style={{ color: 'var(--accent-primary)' }}>
+                  {stats.totalDoses}
+                </p>
+                <p className="text-[9px] font-medium" style={{ color: 'var(--text-tertiary)' }}>doses</p>
+              </div>
+              <div className="text-center">
+                <p className="text-lg font-bold tabular-nums" style={{ color: 'var(--zone-therapeutic)' }}>
+                  {stats.daysTracked}
+                </p>
+                <p className="text-[9px] font-medium" style={{ color: 'var(--text-tertiary)' }}>days</p>
+              </div>
+              <div className="text-center">
+                <p className="text-lg font-bold tabular-nums" style={{ color: 'var(--accent-warm)' }}>
+                  {stats.totalCheckIns}
+                </p>
+                <p className="text-[9px] font-medium" style={{ color: 'var(--text-tertiary)' }}>check-ins</p>
+              </div>
+              {stats.streak > 1 && (
+                <div className="text-center">
+                  <p className="text-lg font-bold tabular-nums" style={{ color: 'var(--accent-secondary)' }}>
+                    {stats.streak}
+                  </p>
+                  <p className="text-[9px] font-medium" style={{ color: 'var(--text-tertiary)' }}>streak</p>
+                </div>
+              )}
+            </div>
+            {stats.firstDate && (
+              <p className="text-[10px] mt-1" style={{ color: 'var(--text-tertiary)' }}>
+                Tracking since {stats.firstDate} &middot; Tap for full history
+              </p>
+            )}
+          </div>
+          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth={2}>
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </button>
+      )}
+
       {/* Quick Log Button */}
       {status?.isActive && (
         <button
@@ -256,6 +442,32 @@ export default function Dashboard({ onNavigate, onLogSubjective }: DashboardProp
             </p>
           </div>
           <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="var(--accent-primary)" strokeWidth={2}>
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </button>
+      )}
+
+      {/* Log Sleep Button */}
+      {onLogSleep && (
+        <button
+          onClick={onLogSleep}
+          className="w-full card-elevated flex items-center gap-3 text-left"
+          style={{
+            padding: '14px 16px',
+            background: 'linear-gradient(135deg, #EFF6FF, #EEF2FF)',
+            border: '1px solid #BFDBFE',
+          }}
+        >
+          <div className="text-2xl">&#x1F634;</div>
+          <div className="flex-1">
+            <p className="text-sm font-semibold" style={{ color: '#2563EB' }}>
+              Log Sleep
+            </p>
+            <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+              Track sleep to improve crash &amp; tolerance predictions
+            </p>
+          </div>
+          <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth={2}>
             <polyline points="9 18 15 12 9 6" />
           </svg>
         </button>

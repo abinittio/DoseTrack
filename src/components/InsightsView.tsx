@@ -3,9 +3,9 @@
 // ============================================
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { useStore } from '@/lib/store';
-import { useDayScores } from '@/lib/hooks';
+import { useDayScores, useToleranceState, useSleepDebtIndex, useRecentSleepLogs } from '@/lib/hooks';
 import { generateInsights } from '@/lib/insights';
 import { Insight } from '@/lib/types';
 import {
@@ -26,12 +26,16 @@ const SEVERITY_STYLES: Record<Insight['severity'], { bg: string; border: string;
 export default function InsightsView() {
   const doses = useStore((s) => s.doses);
   const subjectiveLogs = useStore((s) => s.subjectiveLogs);
+  const sleepLogs = useStore((s) => s.sleepLogs);
   const profile = useStore((s) => s.profile);
   const dayScores = useDayScores();
+  const tolerance = useToleranceState();
+  const sdi = useSleepDebtIndex();
+  const recentSleep = useRecentSleepLogs();
 
   const insights = useMemo(
-    () => generateInsights(doses, subjectiveLogs, dayScores),
-    [doses, subjectiveLogs, dayScores]
+    () => generateInsights(doses, subjectiveLogs, dayScores, sleepLogs),
+    [doses, subjectiveLogs, dayScores, sleepLogs]
   );
 
   // Weekly trend data for chart
@@ -152,6 +156,96 @@ export default function InsightsView() {
         </div>
       )}
 
+      {/* Tolerance Tracker */}
+      <div className="card" style={{ padding: '12px 16px' }}>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
+            Tolerance Tracker
+          </p>
+          <span className="text-[10px] font-medium" style={{ color: 'var(--text-tertiary)' }}>
+            EC50 shift: +{Math.round((tolerance.combinedModifier - 1) * 100)}%
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex-1">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] font-medium" style={{ color: 'var(--text-tertiary)' }}>Sensitivity</span>
+              <span className="text-sm font-bold tabular-nums" style={{
+                color: tolerance.sensitivityPct > 80 ? '#10B981'
+                  : tolerance.sensitivityPct > 50 ? '#F59E0B' : '#EF4444'
+              }}>
+                {tolerance.sensitivityPct}%
+              </span>
+            </div>
+            <div className="w-full h-2 rounded-full" style={{ background: 'var(--border-light)' }}>
+              <div
+                className="h-2 rounded-full transition-all"
+                style={{
+                  width: `${tolerance.sensitivityPct}%`,
+                  background: tolerance.sensitivityPct > 80 ? '#10B981'
+                    : tolerance.sensitivityPct > 50 ? '#F59E0B' : '#EF4444',
+                }}
+              />
+            </div>
+            <div className="flex justify-between mt-1">
+              <span className="text-[8px]" style={{ color: 'var(--text-tertiary)' }}>
+                Acute: {Math.round(tolerance.acuteTolerance * 100)}%
+              </span>
+              <span className="text-[8px]" style={{ color: 'var(--text-tertiary)' }}>
+                Chronic: {Math.round(tolerance.chronicTolerance * 100)}%
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Sleep Health */}
+      <div className="card" style={{ padding: '12px 16px' }}>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>
+            Sleep Health
+          </p>
+          <span
+            className="text-xs font-bold tabular-nums"
+            style={{
+              color: sdi <= 4 ? '#10B981' : sdi <= 8 ? '#F59E0B' : '#EF4444',
+            }}
+          >
+            {sdi.toFixed(1)}h debt
+          </span>
+        </div>
+        {recentSleep.length > 0 ? (
+          <div className="flex gap-1">
+            {recentSleep.map((s) => {
+              const barHeight = Math.max(8, (s.hoursSlept / 10) * 40);
+              return (
+                <div key={s.id} className="flex-1 flex flex-col items-center gap-0.5">
+                  <div
+                    className="w-full rounded-sm"
+                    style={{
+                      height: barHeight,
+                      background: s.hoursSlept >= 7 ? '#10B981'
+                        : s.hoursSlept >= 5 ? '#F59E0B' : '#EF4444',
+                      opacity: 0.7,
+                    }}
+                  />
+                  <span className="text-[7px] font-medium tabular-nums" style={{ color: 'var(--text-tertiary)' }}>
+                    {s.hoursSlept}h
+                  </span>
+                  <span className="text-[6px]" style={{ color: 'var(--text-tertiary)' }}>
+                    {new Date(s.date + 'T12:00').toLocaleDateString('en-US', { weekday: 'narrow' })}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="text-[10px]" style={{ color: 'var(--text-tertiary)' }}>
+            No sleep data logged yet. Log sleep to see how rest affects your cognitive activation.
+          </p>
+        )}
+      </div>
+
       {/* Insight cards */}
       <div className="space-y-3">
         {insights.map((insight) => {
@@ -202,13 +296,104 @@ export default function InsightsView() {
       )}
 
       {/* Data management */}
-      <div className="card" style={{ padding: '12px 16px' }}>
-        <p className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
-          Data
-        </p>
-        <p className="text-[10px] leading-relaxed" style={{ color: 'var(--text-tertiary)' }}>
-          All data is stored locally on your device. Nothing is sent to any server.
-        </p>
+      <DataManagement />
+    </div>
+  );
+}
+
+function DataManagement() {
+  const doses = useStore((s) => s.doses);
+  const subjectiveLogs = useStore((s) => s.subjectiveLogs);
+  const exportData = useStore((s) => s.exportData);
+  const importData = useStore((s) => s.importData);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const dataInfo = useMemo(() => {
+    const allTimestamps = [
+      ...doses.map((d) => new Date(d.takenAt).getTime()),
+      ...subjectiveLogs.map((s) => new Date(s.timestamp).getTime()),
+    ];
+    const earliest = allTimestamps.length > 0 ? new Date(Math.min(...allTimestamps)) : null;
+    const latest = allTimestamps.length > 0 ? new Date(Math.max(...allTimestamps)) : null;
+    return {
+      doseCount: doses.length,
+      checkInCount: subjectiveLogs.length,
+      earliest: earliest?.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+      latest: latest?.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    };
+  }, [doses, subjectiveLogs]);
+
+  const handleExport = () => {
+    const json = exportData();
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `vytrack-backup-${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        importData(reader.result as string);
+        alert('Data imported successfully!');
+      } catch {
+        alert('Failed to import — invalid file format.');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
+
+  return (
+    <div className="card" style={{ padding: '12px 16px' }}>
+      <p className="text-xs font-semibold mb-2" style={{ color: 'var(--text-secondary)' }}>
+        Data Management
+      </p>
+      <p className="text-[10px] leading-relaxed mb-3" style={{ color: 'var(--text-tertiary)' }}>
+        All data is stored locally on your device. Nothing is sent to any server.
+        {dataInfo.doseCount > 0 && (
+          <> · {dataInfo.doseCount} doses, {dataInfo.checkInCount} check-ins
+            {dataInfo.earliest && dataInfo.latest && dataInfo.earliest !== dataInfo.latest
+              ? ` (${dataInfo.earliest} — ${dataInfo.latest})`
+              : dataInfo.earliest ? ` (${dataInfo.earliest})` : ''}
+          </>
+        )}
+      </p>
+      <div className="flex gap-2">
+        <button
+          onClick={handleExport}
+          className="flex-1 rounded-xl text-xs font-semibold py-2.5"
+          style={{
+            background: 'var(--accent-primary)',
+            color: '#fff',
+          }}
+        >
+          Export JSON
+        </button>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          className="flex-1 rounded-xl text-xs font-semibold py-2.5"
+          style={{
+            border: '1px solid var(--border-medium)',
+            color: 'var(--text-secondary)',
+            background: 'var(--bg-primary)',
+          }}
+        >
+          Import Backup
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json"
+          onChange={handleImport}
+          className="hidden"
+        />
       </div>
     </div>
   );
